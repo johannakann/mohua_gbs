@@ -1,0 +1,199 @@
+### This pipeline was created by Stefanie Grosser, University of Otago, 22/07/2021 and modified for mohua by Johanna Kann
+
+
+###################################################################################### 
+#######																		   #######
+#######  Identifying Sex chromosomes in the mohua (Mohoua ochrocephala) #######  
+#######																		   #######
+###################################################################################### 
+
+### Pipeline to identify sex chromosome-linked scaffolds in the mohua reference assembly 
+### (GenBank accession: GCA_013398855.1)
+
+
+
+### To identify scaffolds of sex chromosomal origin in the fragmented mohua 
+### reference assembly, align the scaffolds to another reference genome with chromosome 
+### information. New Caledonian crow (Corvus moneduloides) has both sex chromosomes (Z & W)
+### assembled (GenBank accession: GCF_009650955.1).
+### Run LastZ for whole genome alignment. 
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Files and directories ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### mohua genome
+mohua_genome_path=/nesi/project/uoo03575/mohua_gbs_all/removeZW/files/
+mohua_genome_file=mohua_ref_genome.fna
+mohua_index_file=mohua_ref_genome.fna.fai
+
+### New Caledonian crow genome 
+newCal_genome_path=/nesi/project/uoo03575/mohua_gbs_all/removeZW/files/
+newCal_genome_file=newCal_ref_genome.fna
+
+### Script for running LastZ aligning all query scaffolds to a single target chromosome 
+/nesi/project/uoo03575/mohua_gbs_all/removeZW/files/alignGenomes_LastZ.sh
+
+### Analysis output path
+analyses_output_path=/nesi/project/uoo03575/mohua_gbs_all/removeZW/ZWscaffold_identification/LastZ_analysis_out/
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Prep Corvus moneduloides genome ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### Separate the genome into chromosomes
+
+### Split the genome file from the New Caledonian crow into separate chromosomes.
+### The New Cal crow has 36 chromosomes but the assembly contains 105 scaffolds.
+### Check the scaffold lengths by running SAMtools faidx
+
+### Split genome into separate chromosome files. (First need to create /chromosome_fastas folder in ${newCal_genome_path})
+
+chr_out_path=${newCal_genome_path}/chromosome_fastas/
+
+## Fasta header line example from genome file:
+## NC_045476.1 Corvus moneduloides isolate bCorMon1 chromosome 1, bCorMon1.pri, whole genome shotgun sequence
+
+## Extended loop with comments
+## For every line in the genome file
+
+while read line
+
+do
+	## If the line starts with ">" (header line)
+    if [[ ${line:0:1} == '>' ]]
+    
+    then
+    	## Extract the 1st 5th and 7th word from the header line: NC_045476.1_bCorMon1_Chr{NUMBER OF CHROMOSOME} and store in "name" variable
+        name=$(echo $line | sed 's/>//' | awk '{print $1 "_" $5 "_Chr" $7}')  
+        ## define output file name
+        outfile=${name}.fa
+        ## write the header line to new file with the defined chromosome name
+        echo $line > ${chr_out_path}${outfile}
+    
+    else
+    	## If not a header line write the line to the same file.
+        echo $line >> ${chr_out_path}${outfile}
+    
+    fi
+
+done < newCal_ref_genome.fna
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Genome alignment ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+### Run the script for each chromosome of the New Caledonian crow genome (this will exclude small unplaced scaffolds included in the total genome assembly)
+
+## Define script input arguments (variables)
+query_chromosome_file=${newCal_genome_path}/chromosome_fastas/newCal_ChromosomeFastaList.txt	# Contains names of all chromosome fasta files
+target_path=$mohua_genome_path		# Path to mohua assembly
+target=$mohua_genome_file			# mohua assembly file name
+out_path=$analyses_output_path		# output path for analyses files
+query_species=newCal				# Short form of alignment query species name (New Caledonian crow)
+target_species=mohua				# Short form of alignment target species name (magpie)
+
+## First generate the query_chromosome_file
+## In directory ${newCal_genome_path}chromosome_fastas/ run command:
+
+## Prints all files in the current working directory with their full path
+find $PWD -maxdepth 1 -type f > $query_chromosome_file
+
+## Run LastZ
+## Extended loop with comments
+## Loop runs the script for every fasta chromosome file listed in $query_chromosome_file
+
+while read line 
+
+do 
+	
+	## The alignment query contains the name of the chromosome fasta file
+	query=$line
+	## Output the command to run the script to a file to know which chromosome was run under which slurm ID
+	echo "sbatch alignGenomes_LastZ.sh ${query} ${target_path} ${target} ${out_path} ${query_species} ${target_species}" >> alignGenomes_LastZ_jobID_list.txt
+	## Run the actual command with input arguments
+	sbatch alignGenomes_LastZ.sh ${query} ${target_path} ${target} ${out_path} ${query_species} ${target_species}
+
+done < $query_chromosome_file
+
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Scaffold extraction ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### Extract the mohua scaffold names that aligned to New Caledonian crow Z and W chromosomes
+
+## Remove header line from files (tail -n +2), extract the 4th column containing the scaffold name (cut -f4), sort the scaffold names, and show every scaffold name only once (uniq). 
+tail -n +2 ${analyses_output_path}LastZalignment_newCal_mohua_ChrZ,.txt | cut -f4 | sort | uniq > ${analyses_output_path}mohua_ZWscaffold_names.txt
+tail -n +2 ${analyses_output_path}/LastZalignment_newCal_mohua_ChrW,.txt | cut -f4 | sort | uniq >> ${analyses_output_path}/mohua_ZWscaffold_names.txt
+
+## Remove scaffolds names that are duplicated because the scaffolds aligned to Z and W (save to temp file and then rename temp file)
+sort ${analyses_output_path}mohua_ZWscaffold_names.txt | uniq > ${analyses_output_path}mohua_ZWscaffold_names.txt_temp
+mv ${analyses_output_path}mohua_ZWscaffold_names.txt_temp ${analyses_output_path}mohua_ZWscaffold_names.txt
+
+
+### For all identified scaffolds get the scaffold size from the fasta index file (.fai) 
+## Extended loop with comments
+
+## For every identified scaffold name in mohua_ZWscaffold_names.txt
+while read line
+
+do 
+	## Get the line in the fasta index file matching the scaffold name and extract the first two columns of the line (scaffold name and size) and write to new file.
+	grep "$line" ${mohua_genome_path}${mohua_index_file} | cut -f1,2 >> ${analyses_output_path}mohua_ZWscaffold_names_scaffoldSizes.txt
+
+done < ${analyses_output_path}mohua_ZWscaffold_names.txt  
+
+
+
+### Get the total size of all the scaffolds (total sequence length of the mohua genome is 1,051,541,546)
+## Use awk to sum all values from column 2 (scaffolds size)
+
+awk '{sum += $2}END{print sum}' ${analyses_output_path}mohua_ZWscaffold_names_scaffoldSizes.txt
+# Combined size of identified scaffold is 67,154,805 (Z & W of New Caledonian crow together are approx.100Mb)
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Verification of scaffolds ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### Find out if scaffolds aligning to Z and W also align to other chromosomes (alignment was run without masking and repetitive sequence in scaffolds could align to several chromosomes).
+
+### Extract hits of Z W scaffolds against other chromosomes. 
+
+## Extended loop with comments
+## For all LastZalignment files
+
+for i in ${analyses_output_path}LastZalignment*.txt
+
+do 
+	## Extract chromosome name from file name and store in variable
+	chr=$(echo $i | cut -d "_" -f4 | sed 's/\.txt//')
+	## For each Z W scaffold in the scaffold list 
+	while read line
+	
+	do 
+		## Get the line in the LastZalignment file matching the scaffold name and write to new file.
+		grep "$line" $i >> ${analyses_output_path}ZWscaffold_match_${chr}.txt
+	
+	done < ${analyses_output_path}mohua_ZWscaffold_names.txt
+
+done
+
+
+
+### Add the alignment length to each file to assess matches are real alignments of potential matches against repetitive elements etc (short, several matches of the same length at different chromosome positions)
+## Extended loop with comments
+
+## For all ZWscaffold_match files
+for i in ${analyses_output_path}ZWscaffold_match*.txt
+
+do 
+	## Extract the file name
+	name=$(basename "$i" ".txt")
+	## Print the entire line and add an additional column subtracting the start position of the alignment from the end positon (columns 5 and 6)+1 to get length of the alignment and write to new file
+	awk '{print $0 "\t" $6-$5+1}' $i > ${analyses_output_path}${name}_alignmentLengths.txt
+	
+done 
+
+
+
+### Finally, manually check the matches of scaffolds against the other chromosomes and compare with matches to the actual Z and W to assess true Z W identity.
+### Make a list of the final scaffold names. 
+### Exclude all SNPs found for these scaffolds from vcf file. 
+
+### Use 'mohua_ZWscaffold_names.txt' to create .bed file and remove all these scaffolds from my filtered .vcf using vcftools
